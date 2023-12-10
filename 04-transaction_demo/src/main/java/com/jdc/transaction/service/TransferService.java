@@ -2,6 +2,7 @@ package com.jdc.transaction.service;
 
 import java.sql.Connection;
 import java.sql.SQLException;
+import java.sql.Savepoint;
 import java.sql.Statement;
 import java.sql.Timestamp;
 import java.time.LocalDateTime;
@@ -17,38 +18,48 @@ public class TransferService {
 		
 		try(var conn = ConnectionManager.getConnection()){
 			
+			Savepoint savepoint = null;
+			
 			try {
 
-				conn.setAutoCommit(false);
+//				conn.setAutoCommit(false);
+				
 				// get amount from account 
 				var fromAmount = getAmount(conn, from);
 				
 				// get amount to account
 				var toAmount = getAmount(conn, to);
-				
+				createTransferLog(conn, from, to, amount, fromAmount, toAmount,"Start");
+				savepoint = conn.setSavepoint("Start Save");
+
+				updateAmount(conn, from, fromAmount-amount);
+
 				// update amount from account
 				if(fromAmount < amount) {
+					createTransferLog(conn, from, to, amount, fromAmount, toAmount,"Error");
+					savepoint = conn.setSavepoint("Error Save");
 					throw new MessageDbException("Not Enough Money");
 				}
-				updateAmount(conn, from, fromAmount-amount);
 				
-				// update amount to account
-				updateAmount(conn, to, toAmount+amount);
+//				// update amount to account
+//				updateAmount(conn, to, toAmount+amount);
 				
-				// insert transfer log
-				int id = createTransferLog(conn, from, to, amount, fromAmount, toAmount);
+//				// insert transfer log
+				int id = createTransferLog(conn, from, to, amount, fromAmount, toAmount,"Success");
 				
 				// get transfer log data
 				var result = getTransferLog(conn, id);
 				
-				conn.commit();
+//				conn.commit();
 				return result;
 
 			} catch(SQLException e) {
-				conn.rollback(); 
+				if(null != savepoint) {
+					conn.rollback(savepoint);
+				}
 			}
 			
-		} catch (SQLException e) {
+		} catch (Exception e) {
 			e.printStackTrace();
 		}
 		
@@ -59,7 +70,7 @@ public class TransferService {
 
 		var stmt = conn.prepareStatement("""
 				select fa.name fname,ta.name tname,tl.transfer_time transferTime,tl.transfer_amount amount,
-				tl.from_amount famount,tl.to_amount tamount 
+				tl.from_amount famount,tl.to_amount tamount,tl.message message
 				from transfer_log tl 
 				join account fa on fa.id=tl.from_account 
 				join account ta on ta.id=tl.to_account 
@@ -80,16 +91,17 @@ public class TransferService {
 		return null;
 	}
 
-	private int createTransferLog(Connection conn, int from, int to, int amount, int fromAmount,int toAmount) throws SQLException {
+	private int createTransferLog(Connection conn, int from, int to, int amount, int fromAmount,int toAmount,String message) throws SQLException {
 	
 		var stmt = conn.prepareStatement("""
-				insert into transfer_log(from_account,to_account,transfer_amount,from_amount,to_amount) values (?,?,?,?,?)
+				insert into transfer_log(from_account,to_account,transfer_amount,from_amount,to_amount,message) values (?,?,?,?,?,?)
 				""",Statement.RETURN_GENERATED_KEYS);
 		stmt.setInt(1, from);
 		stmt.setInt(2, to);
 		stmt.setInt(3, amount);
 		stmt.setInt(4, fromAmount);
 		stmt.setInt(5, toAmount);
+		stmt.setString(6, message);
 		stmt.executeUpdate();
 		
 		var keys = stmt.getGeneratedKeys();
